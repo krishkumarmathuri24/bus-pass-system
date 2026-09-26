@@ -41,37 +41,6 @@ const PAYMENT_METHODS = [
   { id: 'cash', name: 'Cash on Boarding', icon: '💵', subtitle: 'Pay directly to conductor upon entry' },
 ];
 
-const FALLBACK_BUSES = [
-  {
-    id: '436dc5c3-32aa-4f77-8311-b7bc0082505e',
-    busNumber: 'BUS-012',
-    routeName: 'Route 12: Downtown - University',
-    frequency: 'Every 8 mins',
-    capacity: 45,
-  },
-  {
-    id: '4837790e-de40-45a5-912d-8145d2dad911',
-    busNumber: 'BUS-034',
-    routeName: 'Route 34: Airport Express',
-    frequency: 'Every 15 mins',
-    capacity: 50,
-  },
-  {
-    id: 'a0dde94c-14d7-40a7-a42e-e04f35e6c905',
-    busNumber: 'BUS-007',
-    routeName: 'Route 7: Suburb Loop',
-    frequency: 'Every 12 mins',
-    capacity: 35,
-  },
-  {
-    id: '6fe5adcc-835f-4d02-bfbe-4cb3c2b113d1',
-    busNumber: 'BUS-042',
-    routeName: 'Route 42: Coastal Rapid Transit',
-    frequency: 'Every 10 mins',
-    capacity: 55,
-  },
-];
-
 const DEFAULT_PRICING = [
   { passType: 'single_ride', price: 2.50 },
   { passType: 'day_pass', price: 6.00 },
@@ -83,8 +52,9 @@ export default function BookTicket() {
   const { user, loginAsDemo } = useAuth();
   const navigate = useNavigate();
 
-  const [buses, setBuses] = useState(FALLBACK_BUSES);
-  const [busId, setBusId] = useState(FALLBACK_BUSES[0].id);
+  const [buses, setBuses] = useState([]);
+  const [busesLoading, setBusesLoading] = useState(true);
+  const [busId, setBusId] = useState(null);
   const [passType, setPassType] = useState('single_ride');
   const [pricing, setPricing] = useState(DEFAULT_PRICING);
   const [paymentMethod, setPaymentMethod] = useState('card');
@@ -106,16 +76,19 @@ export default function BookTicket() {
   }, [user]);
 
   useEffect(() => {
+    setBusesLoading(true);
     api.get('/buses')
       .then((res) => {
         if (res.data && res.data.length > 0) {
           setBuses(res.data);
-          setBusId((prev) => prev || res.data[0].id);
+          // Always use the first real bus ID from the API — never a stale fallback
+          setBusId(res.data[0].id);
         }
       })
       .catch((err) => {
-        console.warn('Backend /buses fetch failed, using fallback routes:', err.message);
-      });
+        console.warn('Backend /buses fetch failed:', err.message);
+      })
+      .finally(() => setBusesLoading(false));
   }, []);
 
   useEffect(() => {
@@ -133,7 +106,7 @@ export default function BookTicket() {
       .finally(() => setLoadingPricing(false));
   }, [busId]);
 
-  const selectedBus = buses.find((b) => b.id === busId) || buses[0];
+  const selectedBus = buses.find((b) => b.id === busId) || buses[0] || null;
   const activePricingRow = pricing.find((p) => p.passType === passType);
   const activePrice = activePricingRow?.price != null ? Number(activePricingRow.price) : 2.50;
 
@@ -357,34 +330,46 @@ export default function BookTicket() {
               <label className="block text-sm font-bold text-slate-900">
                 1. Select Route Corridor
               </label>
-              <div className="grid sm:grid-cols-2 gap-2.5">
-                {buses.map((b) => {
-                  const isSelected = b.id === busId;
-                  return (
-                    <button
-                      key={b.id}
-                      type="button"
-                      onClick={() => setBusId(b.id)}
-                      className={`text-left p-3.5 rounded-2xl border transition-all ${
-                        isSelected
-                          ? 'border-blue-600 bg-blue-50/70 shadow-sm ring-2 ring-blue-500/20'
-                          : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-xs px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-800">
-                          {b.busNumber}
-                        </span>
-                        {isSelected && (
-                          <span className="text-blue-600 text-xs font-bold">✓ Selected</span>
-                        )}
-                      </div>
-                      <p className="font-bold text-slate-900 text-xs leading-snug line-clamp-1">{b.routeName}</p>
-                      <p className="text-[11px] text-slate-500 mt-1">{b.frequency || 'Every 10 mins'}</p>
-                    </button>
-                  );
-                })}
-              </div>
+              {busesLoading ? (
+                <div className="grid sm:grid-cols-2 gap-2.5">
+                  {[1,2,3,4].map(i => (
+                    <div key={i} className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 animate-pulse h-16" />
+                  ))}
+                </div>
+              ) : buses.length === 0 ? (
+                <p className="text-sm text-red-500 bg-red-50 border border-red-200 rounded-xl p-3">
+                  ⚠️ Could not load routes. Please refresh the page.
+                </p>
+              ) : (
+                <div className="grid sm:grid-cols-2 gap-2.5">
+                  {buses.map((b) => {
+                    const isSelected = b.id === busId;
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => setBusId(b.id)}
+                        className={`text-left p-3.5 rounded-2xl border transition-all ${
+                          isSelected
+                            ? 'border-blue-600 bg-blue-50/70 shadow-sm ring-2 ring-blue-500/20'
+                            : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-bold text-xs px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-800">
+                            {b.busNumber}
+                          </span>
+                          {isSelected && (
+                            <span className="text-blue-600 text-xs font-bold">✓ Selected</span>
+                          )}
+                        </div>
+                        <p className="font-bold text-slate-900 text-xs leading-snug line-clamp-1">{b.routeName}</p>
+                        <p className="text-[11px] text-slate-500 mt-1">{b.frequency || 'Every 10 mins'}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Step 2: Select Pass Type */}
