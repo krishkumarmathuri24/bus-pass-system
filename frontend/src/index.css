@@ -1,7 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');
+@import 'leaflet/dist/leaflet.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-gray-50 text-gray-900;
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 font-sans antialiased;
+    background-image: radial-gradient(at 100% 0%, rgba(37, 99, 235, 0.04) 0px, transparent 50%),
+                      radial-gradient(at 0% 100%, rgba(99, 102, 241, 0.04) 0px, transparent 50%);
+    min-height: 100vh;
+  }
+}
+
+/* Glassmorphism styling */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.glass-dark {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Transit ticket visual pattern */
+.pass-ticket-cutout {
+  position: relative;
+}
+.pass-ticket-cutout::before,
+.pass-ticket-cutout::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  background-color: #f8fafc;
+  border-radius: 50%;
+  top: 65%;
+  z-index: 10;
+}
+.pass-ticket-cutout::before {
+  left: -10px;
+  box-shadow: inset -1px 0 0 rgba(226, 232, 240, 0.8);
+}
+.pass-ticket-cutout::after {
+  right: -10px;
+  box-shadow: inset 1px 0 0 rgba(226, 232, 240, 0.8);
+}
+
+/* Pulse radar ring for live tracking */
+@keyframes radar-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.9;
+  }
+  70% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+.radar-ping {
+  animation: radar-pulse 2s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+}
+
+/* Custom leaflet marker styling overrides */
+.leaflet-container {
+  font-family: inherit;
+  border-radius: 1rem;
 }

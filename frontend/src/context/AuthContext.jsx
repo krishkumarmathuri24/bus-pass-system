@@ -5,8 +5,12 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('user');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
   });
 
   async function login(email, password) {
@@ -14,6 +18,7 @@ export function AuthProvider({ children }) {
     localStorage.setItem('token', data.token);
     localStorage.setItem('user', JSON.stringify(data.user));
     setUser(data.user);
+    return data.user;
   }
 
   async function signup(name, email, password, phone) {
@@ -21,6 +26,13 @@ export function AuthProvider({ children }) {
     localStorage.setItem('token', data.token);
     localStorage.setItem('user', JSON.stringify(data.user));
     setUser(data.user);
+    return data.user;
+  }
+
+  async function loginAsDemo(role = 'rider') {
+    const email = role === 'admin' ? 'admin@citybus.com' : 'krishkumarmathuri@gmail.com';
+    const password = role === 'admin' ? 'admin123' : 'password123';
+    return await login(email, password);
   }
 
   function logout() {
@@ -30,7 +42,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, signup, logout }}>
+    <AuthContext.Provider value={{ user, login, signup, loginAsDemo, logout }}>
       {children}
     </AuthContext.Provider>
   );

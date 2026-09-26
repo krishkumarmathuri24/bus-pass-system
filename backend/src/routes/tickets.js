@@ -1,5 +1,5 @@
 const express = require('express');
-const { Ticket, Pricing, Bus } = require('../models');
+const { Ticket, Pricing, Bus, User } = require('../models');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { generateTicketToken, generateQrImage, verifyTicketToken } = require('../utils/qrcode');
 
@@ -20,12 +20,9 @@ function computeValidity(passType) {
 }
 
 // POST /tickets/book
-// The client sends only busId + passType - never a price. The price is
-// always looked up server-side from the Pricing table, which is what
-// prevents the "incorrect pricing" tampering scenario from Task 3.
 router.post('/book', requireAuth, async (req, res) => {
   try {
-    const { busId, passType } = req.body;
+    const { busId, passType, paymentMethod } = req.body;
     if (!busId || !passType) {
       return res.status(400).json({ error: 'busId and passType are required' });
     }
@@ -43,7 +40,6 @@ router.post('/book', requireAuth, async (req, res) => {
     const { from, until } = computeValidity(passType);
 
     // Create the ticket first (without qrToken) so we have a real ticket ID
-    // to embed in the signed token.
     const ticket = await Ticket.create({
       userId: req.user.id,
       busId,
@@ -52,6 +48,7 @@ router.post('/book', requireAuth, async (req, res) => {
       qrToken: 'pending',
       validFrom: from,
       validUntil: until,
+      status: 'valid',
     });
 
     const qrToken = generateTicketToken(ticket.id, until);
@@ -65,66 +62,159 @@ router.post('/book', requireAuth, async (req, res) => {
         id: ticket.id,
         busId: ticket.busId,
         routeName: bus.routeName,
+        busNumber: bus.busNumber,
         passType: ticket.passType,
         priceCharged: ticket.priceCharged,
         status: ticket.status,
         validFrom: ticket.validFrom,
         validUntil: ticket.validUntil,
+        paymentMethod: paymentMethod || 'Card/Online',
       },
-      qrImage, // base64 PNG the frontend renders directly
+      qrImage,
+      qrToken,
     });
   } catch (err) {
     res.status(500).json({ error: 'Booking failed', details: err.message });
   }
 });
 
-// GET /tickets/mine - "My Passes" page
+// GET /tickets/mine - "My Passes" page with auto-expiration detection
 router.get('/mine', requireAuth, async (req, res) => {
-  const tickets = await Ticket.findAll({
-    where: { userId: req.user.id },
-    include: [{ model: Bus, attributes: ['routeName', 'busNumber'] }],
-    order: [['createdAt', 'DESC']],
-  });
-  res.json(tickets);
+  try {
+    const tickets = await Ticket.findAll({
+      where: { userId: req.user.id },
+      include: [{ model: Bus, attributes: ['routeName', 'busNumber', 'capacity'] }],
+      order: [['createdAt', 'DESC']],
+    });
+
+    const now = new Date();
+    // Auto-mark expired tickets in response and DB
+    const processed = await Promise.all(
+      tickets.map(async (t) => {
+        if (t.status === 'valid' && new Date(t.validUntil) < now) {
+          t.status = 'expired';
+          await t.save().catch(() => {});
+        }
+        return t;
+      })
+    );
+
+    res.json(processed);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch tickets', details: err.message });
+  }
 });
 
 // GET /tickets/:id/qr - re-fetch the QR image for an existing ticket
 router.get('/:id/qr', requireAuth, async (req, res) => {
-  const ticket = await Ticket.findByPk(req.params.id);
-  if (!ticket || ticket.userId !== req.user.id) {
-    return res.status(404).json({ error: 'Ticket not found' });
+  try {
+    const ticket = await Ticket.findByPk(req.params.id);
+    if (!ticket || ticket.userId !== req.user.id) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    const qrImage = await generateQrImage(ticket.qrToken);
+    res.json({ qrImage, qrToken: ticket.qrToken });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to generate QR', details: err.message });
   }
-  const qrImage = await generateQrImage(ticket.qrToken);
-  res.json({ qrImage });
 });
 
-// POST /tickets/validate - used by a conductor/scanner app (admin only).
-// Verifies the signed token AND the live DB status, then marks single-ride
-// tickets as used so the same QR can't be replayed.
-router.post('/validate', requireAuth, requireAdmin, async (req, res) => {
-  const { qrToken } = req.body;
-  const decoded = verifyTicketToken(qrToken);
-  if (!decoded) {
-    return res.status(400).json({ valid: false, reason: 'Invalid, tampered, or expired QR code' });
-  }
+// GET /tickets/verify/:id - public/conductor verification check
+router.get('/verify/:id', async (req, res) => {
+  try {
+    const ticket = await Ticket.findByPk(req.params.id, {
+      include: [
+        { model: Bus, attributes: ['routeName', 'busNumber'] },
+        { model: User, attributes: ['name', 'email'] },
+      ],
+    });
+    if (!ticket) {
+      return res.status(404).json({ valid: false, reason: 'Ticket not found in system' });
+    }
 
-  const ticket = await Ticket.findByPk(decoded.ticketId);
-  if (!ticket) return res.status(404).json({ valid: false, reason: 'Ticket not found' });
-  if (ticket.status !== 'valid') {
-    return res.status(409).json({ valid: false, reason: `Ticket already ${ticket.status}` });
-  }
-  if (new Date(ticket.validUntil) < new Date()) {
-    ticket.status = 'expired';
-    await ticket.save();
-    return res.status(409).json({ valid: false, reason: 'Ticket expired' });
-  }
+    const now = new Date();
+    let effectiveStatus = ticket.status;
+    if (effectiveStatus === 'valid' && new Date(ticket.validUntil) < now) {
+      effectiveStatus = 'expired';
+      ticket.status = 'expired';
+      await ticket.save().catch(() => {});
+    }
 
-  if (ticket.passType === 'single_ride') {
-    ticket.status = 'used';
-    await ticket.save();
-  }
+    const isValid = effectiveStatus === 'valid';
 
-  res.json({ valid: true, ticket });
+    res.json({
+      valid: isValid,
+      status: effectiveStatus,
+      ticket: {
+        id: ticket.id,
+        routeName: ticket.Bus?.routeName || 'City Transit Route',
+        busNumber: ticket.Bus?.busNumber || 'N/A',
+        passType: ticket.passType,
+        priceCharged: ticket.priceCharged,
+        passengerName: ticket.User?.name || 'Rider',
+        validFrom: ticket.validFrom,
+        validUntil: ticket.validUntil,
+        status: effectiveStatus,
+      },
+      reason: isValid ? 'Pass is active and verified' : `Pass is ${effectiveStatus}`,
+    });
+  } catch (err) {
+    res.status(500).json({ valid: false, reason: 'Verification error', details: err.message });
+  }
+});
+
+// POST /tickets/validate - used by conductor/scanner app
+router.post('/validate', requireAuth, async (req, res) => {
+  try {
+    const { qrToken, ticketId } = req.body;
+    let targetTicketId = ticketId;
+
+    if (qrToken) {
+      const decoded = verifyTicketToken(qrToken);
+      if (!decoded) {
+        return res.status(400).json({ valid: false, reason: 'Invalid, tampered, or expired QR code' });
+      }
+      targetTicketId = decoded.ticketId;
+    }
+
+    if (!targetTicketId) {
+      return res.status(400).json({ valid: false, reason: 'Provide either qrToken or ticketId' });
+    }
+
+    const ticket = await Ticket.findByPk(targetTicketId, {
+      include: [
+        { model: Bus, attributes: ['routeName', 'busNumber'] },
+        { model: User, attributes: ['name', 'email'] },
+      ],
+    });
+
+    if (!ticket) return res.status(404).json({ valid: false, reason: 'Ticket not found' });
+
+    const now = new Date();
+    if (new Date(ticket.validUntil) < now) {
+      ticket.status = 'expired';
+      await ticket.save();
+      return res.status(409).json({ valid: false, reason: 'Ticket expired', ticket });
+    }
+
+    if (ticket.status !== 'valid') {
+      return res.status(409).json({ valid: false, reason: `Ticket already ${ticket.status}`, ticket });
+    }
+
+    // If single ride, conductor marks it as used
+    if (ticket.passType === 'single_ride') {
+      ticket.status = 'used';
+      await ticket.save();
+    }
+
+    res.json({
+      valid: true,
+      reason: 'Pass successfully verified and approved',
+      ticket,
+    });
+  } catch (err) {
+    res.status(500).json({ valid: false, reason: 'Validation error', details: err.message });
+  }
 });
 
 module.exports = router;
